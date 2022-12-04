@@ -1,0 +1,296 @@
+---
+title: Reporte interactivo sobre funcionarios públicos
+author: Jorge Hernández, Eugenio Mora
+date: \today
+params:
+  logo: logo.png
+  cover: cover.png
+  iblue: 2b4894
+  igray: d4dbde
+  Estado: NA
+  ingreso: NA
+  fecha: NA
+  conf: NA
+documentclass: article
+fontsize: 10
+papersize: a4paper
+output: 
+  IReports::businessReport:
+    keep_tex: TRUE
+    latex_engine: xelatex
+    resetStyleFiles: FALSE
+header-includes: 
+  - \newcommand{\logo}{`r gsub("_", "\\_", params$logo)`}
+  - \newcommand{\cover}{`r gsub("_", "\\_", params$cover)`}
+  - \newcommand{\iblue}{`r params$iblue`}
+  - \newcommand{\igray}{`r params$igray`}
+include-before:
+  - \renewcommand{\contentsname}{Tabla de contenidos}
+  - \renewcommand{\pagename}{Página}
+---
+
+
+
+```{r setup, include = FALSE}
+# packages
+library(dplyr)
+library(knitr)
+library(xtable)
+
+# settings
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+\maketitle
+\tableofcontents
+\addcontentsline{toc}{section}{Contenido}
+\clearpage
+
+\section{Introducción}
+Este reporte tiene como objetivo el recopilar y clarificar la información que ya se encuentra filtrada dentro de la aplicación web. Sabemos que tener un dashboard con la información actualizada al momento es algo bastante útil, sin embargo, puede que no en todo momento tengamos la oportunidad o facilidad de poder acceder a este, sobre todo si nos encontramos en un entorno de actualización de datos en la nube, por lo que con este reporte podrás descargar de manera interactiva los datos ya filtrados en el dashboard. 
+
+\section{Sobre los hallazgos encontrados}
+Dentro de las bases de datos, nos vamos a enfocar principalmente en la primera y la tercera, considerando como métricas principales los ingresos de los funcionarios públicos y los casos en los que existe un conflicto de interés. Si bien es cierto que los ingresos pueden variar dependiendo de los puestos, años de experiencia y otras variables externas, vamos a considerar aquellos ingresos que sean sumamente altos respecto a la media ponderada de los datos, haciendo uso de un `boxplot` para encontrar aquellos datos que se encuentren fuera de un cierto rango normal. Ahora, los ingresos promedio pueden variar de estado a estado, como se puede ver en el gráfico siguiente, por lo que vamos a seccionar los datos por estado para evitar un sesgo en esta métrica.
+
+
+
+
+
+```{r, echo=FALSE}
+
+library(ggplot2)
+library(ggnewscale)
+library(dplyr)
+
+locs <- vroom::vroom("data/locs_fin.csv")
+datos <- vroom::vroom("data/datos.csv")
+estados <- sf::read_sf("data/México_Estados/México_Estados.shp")
+
+```
+
+
+
+```{r, echo=FALSE}
+datos |> 
+  ggplot(
+    aes(x = ingreso_mensual)
+  ) +
+  geom_boxplot() +
+  facet_wrap(~estado) + 
+  theme_minimal()
+
+```
+
+
+Como segundo punto importante a considerar es si el usuario tiene un conflicto de interés, lo cual lo vuelve un candidato potencial a presentar algún caso de corrupción en un futuro. Para dar una calificación de riesgo a los funcionarios, se hará uso de la siguiente fórmula:
+
+$$
+Calificación = (\frac{I_e}{max (I_e)}+C_i)*100
+$$
+La lógica de la fórmula es sencilla: Vamos a considerar una ponderación respecto a los ingresos reportados que vaya de 0 a 1 (o números negativos en caso de tener un ingreso negativo reportado), siendo que la calificación máxima posible de obtener en este aspecto será para la persona que haya reportado el mayor ingreso, mientras que los casos de conflicto de interés se van a considerar como un punto. Para una mejor comprensión de los datos visualmente, estos se van a multiplicar por 100, de tal manera que la calificación de máximo riesgo será de 200. Cabe aclarar que estos datos solo aplicarán para aquellos casos en los que se considere que haya ingresos por encima de la media ponderada.
+
+Pasemos a ver un top con la información seleccionada en el reporte anterior:
+
+
+```{r, echo=FALSE}
+
+datos_react <- datos |> 
+  mutate(
+    Estado = toupper(estado)
+  ) |> 
+  filter(
+    Estado %in% params$Estado
+  )
+
+
+x <- 
+  datos_react[datos_react$ingreso_mensual %in% boxplot.stats(datos_react$ingreso_mensual)$out,] |> 
+  mutate(
+    prob_ing = ingreso_mensual/max(ingreso_mensual),
+    conflicto = if_else(conflicto == F, 0, 1),
+    calif = (prob_ing + conflicto)*100
+  ) |> 
+  select(-one_of("zona", "tipo_ingreso", #"clasif_ing",
+                 "fecha", "id", "ingreso", "moneda",
+                 "correo", "Estado"
+  )) |> 
+  mutate(
+    estado = Hmisc::capitalize(estado),
+    nombre = Hmisc::capitalize(tolower(nombre)),
+    apellido = Hmisc::capitalize(tolower(apellido)),
+    apellido2 = Hmisc::capitalize(tolower(apellido2)),
+    ingreso_mensual = round(ingreso_mensual),
+    prob_ing = round(prob_ing, digits = 3),
+    calif = round(calif, digits = 3)
+  ) 
+
+
+
+x |> 
+  rename(
+    Ingreso = ingreso_mensual,
+    Nombre = nombre,
+    Apellido = apellido,
+    `Seg apellido` = apellido2,
+    `C. de interés` = conflicto,
+    Estado = estado,
+    `P. por ingreso` = prob_ing,
+    `Calificación` = calif
+  ) |> 
+  arrange(desc(Calificación)) |> 
+  head(10) |> 
+  kable(format = "latex")
+
+
+
+```
+
+
+Finalmente, podemos observar un gráfico espacial de los datos, seccionando ingreso por estado y por observación. Lo que podemos notar principalmente es el hecho de que en determinados estados tenemos un ingreso promedio mucho más elevado, sin embargo, hay que notar que esto ocurre debido a casos particulares con ingresos sumamente elevados, lo que mueve todo el promedio de manera considerable hacia arriba.
+
+
+```{r, echo=FALSE}
+
+theme_map <- function(...) {
+  theme_minimal() +
+    theme(
+      text = element_text( color = "#22211d"),
+      axis.line = element_blank(),
+      axis.text.x = element_blank(),
+      axis.text.y = element_blank(),
+      axis.ticks = element_blank(),
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      panel.grid.major = element_line(color = "#ebebe5", size = 0.2),
+      panel.grid.minor = element_blank(),
+      plot.background = element_rect(fill = "#f7f7f7", color = NA), 
+      panel.background = element_rect(fill = "#f7f7f7", color = NA), 
+      legend.background = element_rect(fill = "#f7f7f7", color = NA),
+      panel.border = element_blank(),
+      ...
+    )
+}
+
+
+
+locs <- 
+locs |> 
+  left_join(
+    datos |> 
+      group_by(
+        zona
+      ) |> 
+      summarise(
+        ingreso =  mean(ingreso, na.rm = T)
+      ),
+    by = c("zona" = "zona")
+  ) |> 
+  mutate(
+    color = case_when(
+      ingreso <= 10000 ~ "Bajo",
+      ingreso > 10000 & ingreso <= 30000 ~ "Medio",
+      ingreso > 30000 & ingreso <= 50000 ~ "Alto",
+      ingreso > 50000 ~ "Muy alto"
+    )
+  )
+
+
+
+x <-
+estados |> 
+  mutate(
+    ESTADO = tolower(ESTADO)
+  ) |> 
+  left_join(
+    datos |> 
+      group_by(estado) |> 
+      summarise(
+        ingreso_medio = mean(ingreso_mensual, na.rm = T)
+      ),
+    by = c("ESTADO" = "estado")
+  )
+
+
+
+x |>
+  ggplot() +
+  geom_sf(
+    aes(fill = ingreso_medio), size = 0.1,
+    color = "white"
+  ) +
+  scale_fill_viridis_c(option = "inferno", trans = "sqrt", direction = -1,
+                       name = "Ingreso medio",
+                       label = scales::dollar_format(),
+                       guide = guide_colorbar(
+                         direction = "vertical",
+                         barheight = unit(30, units = "mm"),
+                         barwidth = unit(2, units = "mm"),
+                         draw.ulim = F,
+                         title.position = 'top',
+                         title.hjust = 0.5,
+                         label.hjust = 0.5
+                       )
+  ) +
+  new_scale_colour() +
+  geom_point(
+    data = locs,
+    aes(x=lng, y=lat,
+        color = as.factor(color)
+    ),
+    size = 0.2
+  ) +
+  scale_color_brewer(
+    palette = 1,
+    name = "Tipo de ingreso"
+  ) +
+  theme_map() +
+  labs(x = NULL,
+       y = NULL,
+       title = "Ingresos mensuales reportados por funcionarios de gobierno",
+       subtitle = "A nivel estado y por casos específicos",
+       caption = paste0("Fecha de actualización: ", lubridate::today())) +
+  theme(
+    legend.text.align = 0,
+    legend.background = element_rect(fill = alpha('white', 0.0)),
+    legend.text = element_text(size = 7, hjust = 0, color = "#4e4d47"),
+    plot.title = element_text(hjust = 0.5, color = "#4e4d47"),
+    plot.subtitle = element_text(hjust = 0.5, color = "#4e4d47",
+                                 margin = margin(b = -0.1,
+                                                 t = -0.1,
+                                                 l = 2,
+                                                 unit = "cm"),
+                                 debug = F),
+    legend.title = element_text(size = 8),
+    plot.margin = unit(c(.5,.5,.2,.5), "cm"),
+    panel.spacing = unit(c(-.1,0.2,.2,0.2), "cm"),
+    panel.border = element_blank(),
+    plot.caption = element_text(size = 6,
+                                hjust = 0.92,
+                                margin = margin(t = 0.2,
+                                                b = 0,
+                                                unit = "cm"),
+                                color = "#939184")
+  )
+
+```
+
+
+
+
+\section{Referencias}
+
+
+[1] Xie, Y., Allaire, J. J., & Grolemund, G. (2018). R markdown: The definitive guide. Chapman and Hall/CRC.
+Chicago	
+
+[2] Sievert, C. (2020). Interactive web-based data visualization with R, plotly, and shiny. CRC Press.
+
+[3] Chaudhuri, S., Dayal, U., & Narasayya, V. (2011). An overview of business intelligence technology. Communications of the ACM, 54(8), 88-98.
+
+
+
+
+
+
+
+
